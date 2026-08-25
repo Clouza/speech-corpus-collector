@@ -16,7 +16,12 @@ class ValidationResult:
     duration_seconds: float | None = None
 
 
-def validate_record(record: CorpusRecord, storage_root: Path, allow_unknown: bool = False) -> ValidationResult:
+def validate_record(
+    record: CorpusRecord,
+    storage_root: Path,
+    allow_unknown: bool = False,
+    precomputed_sha256: str | None = None,
+) -> ValidationResult:
     errors: list[str] = []
     audio_path = Path(record.audio_path)
     if not audio_path.is_absolute():
@@ -49,7 +54,7 @@ def validate_record(record: CorpusRecord, storage_root: Path, allow_unknown: boo
                 errors.append("audio duration is invalid")
         except Exception:
             errors.append("audio cannot be opened")
-        actual_hash = sha256_file(audio_path)
+        actual_hash = precomputed_sha256 or sha256_file(audio_path)
         if not record.sha256:
             errors.append("SHA-256 is empty")
         elif actual_hash != record.sha256:

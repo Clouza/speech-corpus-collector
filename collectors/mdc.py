@@ -25,6 +25,18 @@ def safe_extract_tar(archive: Path, destination: Path) -> None:
         handle.extractall(destination, filter="data")
 
 
+def build_audio_index(audio_paths: Iterable[Path]) -> dict[str, Path]:
+    candidates: dict[str, set[Path]] = {}
+    for audio_path in audio_paths:
+        for key in (audio_path.name.casefold(), audio_path.stem.casefold()):
+            candidates.setdefault(key, set()).add(audio_path)
+    return {
+        key: next(iter(paths))
+        for key, paths in candidates.items()
+        if len(paths) == 1
+    }
+
+
 def parse_time_ms(value: str) -> int:
     cleaned = value.strip().replace(",", ".")
     if ":" not in cleaned:
@@ -70,6 +82,7 @@ class MdcArchiveCollector(BaseCollector):
         if not dataset_id:
             raise ValueError(f"dataset_id is required for {self.key}")
         headers = {"Authorization": f"Bearer {token}"}
+        self._report("Checking Dataset Access")
         details = self.downloader.request_json(
             "GET", f"https://mozilladatacollective.com/api/datasets/{dataset_id}", headers=headers
         )
@@ -89,8 +102,11 @@ class MdcArchiveCollector(BaseCollector):
         extracted = self.storage.raw / self.key / "extracted"
         marker = extracted / ".complete"
         if not marker.exists():
+            self._report(f"Extracting {archive.name}")
             safe_extract_tar(archive, extracted)
             marker.write_text("ok\n", encoding="utf-8")
+        else:
+            self._report("Using Previously Extracted Archive")
         return extracted
 
 
@@ -99,14 +115,16 @@ class MdcTimestampedPodcastCollector(MdcArchiveCollector):
 
     def discover(self) -> Iterable[Candidate]:
         root = self.obtain_archive()
+        self._report("Reading Podcast Transcripts")
         tables = list(root.rglob("*.tsv")) + list(root.rglob("*.csv"))
         if not tables:
             raise RuntimeError(f"{self.display_name} archive contains no TSV/CSV transcript")
-        audio_index = {
-            path.name: path
+        self._report("Indexing Podcast Audio Files")
+        audio_index = build_audio_index(
+            path
             for extension in ("*.mp3", "*.wav", "*.flac", "*.ogg")
             for path in root.rglob(extension)
-        }
+        )
         license_info = resolve_license("CC-BY-SA-4.0")
         seen: set[str] = set()
         segment_number = 0
@@ -130,7 +148,7 @@ class MdcTimestampedPodcastCollector(MdcArchiveCollector):
                 if not audio_name or not text:
                     continue
                 audio_name = audio_name.strip()
-                audio_path = audio_index.get(Path(audio_name).name)
+                audio_path = audio_index.get(Path(audio_name).name.casefold())
                 if audio_path is None:
                     self.logger.error("missing podcast audio %s", audio_name)
                     continue

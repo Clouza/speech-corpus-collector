@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from core.config import AppConfig, SourceConfig
 from core.downloader import Downloader
 from core.licenses import LicenseInfo, download_allowed
-from core.metadata import append_record
+from core.metadata import append_record, load_record_ids
 from core.storage import Manifest, Storage, sha256_file
 from core.validator import validate_record
 from models.record import CorpusRecord, make_record_id
@@ -42,6 +43,7 @@ class Candidate:
 @dataclass
 class CollectionSummary:
     source: str
+    discovered: int = 0
     downloaded: int = 0
     validated: int = 0
     skipped: int = 0
@@ -49,6 +51,8 @@ class CollectionSummary:
     unknown_license: int = 0
     planned: int = 0
     error: str | None = None
+    duration_seconds: float = 0.0
+    failure_examples: list[str] = field(default_factory=list)
 
 
 class CollectorUnavailable(RuntimeError):
@@ -63,9 +67,15 @@ class BaseCollector:
     availability = "available"
     credentials: tuple[str, ...] = ()
 
-    def __init__(self, config: AppConfig, source_config: SourceConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        source_config: SourceConfig,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> None:
         self.config = config
         self.source_config = source_config
+        self.progress_callback = progress_callback
         self.storage = Storage(config.storage.root)
         self.manifest = Manifest(self.storage.manifests / f"{self.key}.json", self.key)
         self.logger = logging.getLogger(f"collector.{self.key}")
@@ -73,7 +83,12 @@ class BaseCollector:
             config.download.timeout_seconds,
             config.download.retries,
             config.download.user_agent,
+            status_callback=progress_callback,
         )
+
+    def _report(self, message: str) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(message)
 
     def discover(self) -> Iterable[Candidate]:
         raise NotImplementedError
@@ -82,16 +97,37 @@ class BaseCollector:
         summary = CollectionSummary(self.key)
         limit = self.config.limits.max_records_per_source
         examined = 0
+        discovered = 0
+        metadata_path = self.storage.source_metadata / f"{self.key}.jsonl"
+        known_record_ids: set[str] = set()
+        last_progress_at = 0.0
         try:
+            if not dry_run:
+                self._report("Loading Existing Metadata")
+                known_record_ids = load_record_ids(metadata_path)
+            self._report("Discovering Candidates")
             for candidate in self.discover():
                 if limit is not None and examined >= limit:
                     break
+                discovered += 1
                 if not download_allowed(candidate.license_info, self.config.licensing.allow_unknown):
                     summary.unknown_license += 1
                     summary.skipped += 1
                     if not dry_run:
                         self.manifest.set(candidate.source_id, "skipped", reason="unknown license")
-                    self.logger.warning("license rejection source_id=%s license=%s", candidate.source_id, candidate.license_info.identifier)
+                    if summary.unknown_license <= 3 or summary.unknown_license % 100 == 0:
+                        self.logger.info(
+                            "license rejection source_id=%s license=%s rejected_count=%s",
+                            candidate.source_id,
+                            candidate.license_info.identifier,
+                            summary.unknown_license,
+                        )
+                    last_progress_at = self._report_candidate_progress(
+                        summary,
+                        discovered,
+                        last_progress_at,
+                        force=discovered == 1,
+                    )
                     continue
                 examined += 1
                 record_id = make_record_id(self.key, candidate.source_id)
@@ -101,9 +137,21 @@ class BaseCollector:
                 current_status = self.manifest.status(candidate.source_id)
                 if current_status == "validated" and destination.exists():
                     summary.skipped += 1
+                    last_progress_at = self._report_candidate_progress(
+                        summary,
+                        discovered,
+                        last_progress_at,
+                        force=discovered == 1,
+                    )
                     continue
                 if dry_run:
                     summary.planned += 1
+                    last_progress_at = self._report_candidate_progress(
+                        summary,
+                        discovered,
+                        last_progress_at,
+                        force=discovered == 1,
+                    )
                     continue
                 self.manifest.set(candidate.source_id, "pending", record_id=record_id)
                 try:
@@ -150,14 +198,19 @@ class BaseCollector:
                         retrieved_at=datetime.now(UTC),
                         extra=candidate.extra,
                     )
-                    result = validate_record(record, self.storage.root, self.config.licensing.allow_unknown)
+                    result = validate_record(
+                        record,
+                        self.storage.root,
+                        self.config.licensing.allow_unknown,
+                        precomputed_sha256=digest,
+                    )
                     record.audio_duration_seconds = (
                         (candidate.end_ms - candidate.start_ms) / 1000
                         if candidate.start_ms is not None and candidate.end_ms is not None
                         else result.duration_seconds
                     )
                     self.storage.transcript_path(self.key, record_id).write_text(candidate.text.strip() + "\n", encoding="utf-8")
-                    append_record(self.storage.source_metadata / f"{self.key}.jsonl", record)
+                    append_record(metadata_path, record, known_record_ids=known_record_ids)
                     self._append_raw(candidate)
                     summary.downloaded += 1
                     if result.valid:
@@ -166,18 +219,49 @@ class BaseCollector:
                     else:
                         summary.failed += 1
                         self.manifest.set(candidate.source_id, "failed", record_id=record_id, errors=result.errors)
+                        self._add_failure_example(summary, candidate.source_id, "; ".join(result.errors))
                         self.logger.error("validation failure record_id=%s errors=%s", record_id, result.errors)
                 except Exception as exc:
                     summary.failed += 1
                     self.manifest.set(candidate.source_id, "failed", record_id=record_id, error=str(exc))
+                    self._add_failure_example(summary, candidate.source_id, str(exc))
                     self.logger.exception("collection failure record_id=%s", record_id)
+                last_progress_at = self._report_candidate_progress(
+                    summary,
+                    discovered,
+                    last_progress_at,
+                    force=discovered == 1,
+                )
         except Exception as exc:
             summary.error = str(exc)
             self.logger.exception("source collection failed")
         finally:
+            summary.discovered = discovered
+            self._report("Saving Manifest")
             self.manifest.flush()
             self.downloader.close()
         return summary
+
+    def _report_candidate_progress(
+        self,
+        summary: CollectionSummary,
+        discovered: int,
+        last_progress_at: float,
+        force: bool = False,
+    ) -> float:
+        now = time.monotonic()
+        if force or discovered % 100 == 0 or now - last_progress_at >= 1:
+            self._report(
+                f"Processing Candidates: {discovered:,} Seen, "
+                f"{summary.validated:,} Validated, {summary.skipped:,} Skipped, {summary.failed:,} Failed"
+            )
+            return now
+        return last_progress_at
+
+    @staticmethod
+    def _add_failure_example(summary: CollectionSummary, source_id: str, error: str) -> None:
+        if len(summary.failure_examples) < 3:
+            summary.failure_examples.append(f"{source_id}: {error}")
 
     def _append_raw(self, candidate: Candidate) -> None:
         path = self.storage.raw / self.key / "source-metadata.jsonl"

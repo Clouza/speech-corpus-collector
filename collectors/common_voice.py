@@ -17,11 +17,13 @@ class CommonVoiceCollector(MdcArchiveCollector):
     def discover(self) -> Iterable[Candidate]:
         root = self.obtain_archive()
         seen: set[str] = set()
+        self._report("Reading Common Voice Metadata")
         metadata_files = []
         for split in ("train", "dev", "test", "validated", "other", "invalidated"):
             metadata_files.extend(root.rglob(f"{split}.tsv"))
         if not metadata_files:
             raise RuntimeError("Common Voice archive contains no recognized TSV metadata")
+        self._report("Indexing Common Voice Audio Files")
         audio_index = {path.name: path for path in root.rglob("*.mp3")}
         license_info = resolve_license("CC0-1.0")
         for metadata_file in metadata_files:

@@ -39,3 +39,15 @@ def test_empty_transcript_and_missing_audio_fail(tmp_path: Path) -> None:
     assert not result.valid
     assert "audio file does not exist" in result.errors
     assert "transcript is empty" in result.errors
+
+
+def test_precomputed_hash_avoids_hashing_audio_again(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "one.wav"
+    make_wav(path)
+    record = record_for(path)
+
+    monkeypatch.setattr("core.validator.sha256_file", lambda _: (_ for _ in ()).throw(AssertionError("rehash")))
+
+    result = validate_record(record, tmp_path, precomputed_sha256=record.sha256)
+
+    assert result.valid

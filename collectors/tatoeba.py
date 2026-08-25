@@ -28,7 +28,7 @@ class TatoebaCollector(BaseCollector):
             for row in rows:
                 sentence = row.get("sentence") or {}
                 audio_id = str(row.get("id", ""))
-                info = resolve_license(row.get("licence"))
+                info = resolve_license(row.get("license") or row.get("licence"))
                 if info.status == "unknown":
                     info = LicenseInfo(info.identifier, info.url, None, None, None, "prohibited")
                 sentence_license = resolve_license(sentence.get("license"))

@@ -14,6 +14,8 @@ def configure_logging(log_directory: Path) -> Path:
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(formatter)
     console_handler = RichHandler(show_time=False, show_path=False, rich_tracebacks=True)
+    console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(logging.Formatter("%(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler], force=True)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     return log_path

@@ -77,6 +77,7 @@ class FleursCollector(BaseCollector):
         for split in ("dev", "train", "test"):
             if remaining == 0:
                 return
+            self._report(f"Reading FLEURS {split.title()} Metadata")
             metadata_path = raw / f"{split}.tsv"
             if not metadata_path.exists():
                 self.downloader.download(f"{base}/{split}.tsv", metadata_path)
@@ -87,6 +88,7 @@ class FleursCollector(BaseCollector):
                 self.downloader.download(f"{base}/audio/{split}.tar.gz", audio_archive)
             requested = {row["filename"]: row for row in needed}
             located: dict[str, Path] = {}
+            self._report(f"Scanning FLEURS {split.title()} Audio Archive")
             with tarfile.open(audio_archive, "r:gz") as archive:
                 for member in archive.getmembers():
                     filename = Path(member.name).name

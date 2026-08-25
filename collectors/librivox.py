@@ -34,6 +34,7 @@ class LibriVoxCollector(BaseCollector):
             if not target.exists():
                 self.downloader.download(f"{base}/{name}", target)
 
+        self._report("Reading LibriVox Metadata")
         rows: list[tuple[str, dict[str, str]]] = []
         for split in ("train", "test"):
             with gzip.open(raw / f"metadata_{split}.csv.gz", "rt", encoding="utf-8-sig") as handle:
@@ -50,6 +51,7 @@ class LibriVoxCollector(BaseCollector):
         extracted.mkdir(exist_ok=True)
         located: dict[str, Path] = {}
         for split in ("train", "test"):
+            self._report(f"Scanning LibriVox {split.title()} Audio Archive")
             with tarfile.open(raw / f"audio_{split}.tgz", "r:gz") as archive:
                 for member in archive.getmembers():
                     normalized = Path(member.name).as_posix()

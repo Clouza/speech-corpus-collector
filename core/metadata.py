@@ -23,12 +23,22 @@ def load_records(path: Path) -> list[CorpusRecord]:
     return records
 
 
-def append_record(path: Path, record: CorpusRecord) -> bool:
+def load_record_ids(path: Path) -> set[str]:
+    return {record.record_id for record in load_records(path)}
+
+
+def append_record(
+    path: Path,
+    record: CorpusRecord,
+    known_record_ids: set[str] | None = None,
+) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if any(existing.record_id == record.record_id for existing in load_records(path)):
+    record_ids = known_record_ids if known_record_ids is not None else load_record_ids(path)
+    if record.record_id in record_ids:
         return False
     with path.open("a", encoding="utf-8") as handle:
         handle.write(record.model_dump_json() + "\n")
+    record_ids.add(record.record_id)
     return True
 
 

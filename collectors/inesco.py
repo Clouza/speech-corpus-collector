@@ -70,6 +70,7 @@ class InescoCollector(BaseCollector):
         raw = self.storage.raw / self.key / f"version-{version}"
         raw.mkdir(parents=True, exist_ok=True)
 
+        self._report("Reading INESCO Dataset Metadata")
         details = self.downloader.request_json("GET", api_base, params={"version": version})
         license_info = resolve_license((details.get("data_licence") or {}).get("short_name"))
         if license_info.identifier != "CC-BY-4.0":
@@ -109,6 +110,7 @@ class InescoCollector(BaseCollector):
         transcripts = load_inesco_transcripts(transcript_path)
 
         for folder in leaf_folders:
+            self._report(f"Reading INESCO Folder: {folder['name']}")
             items = self._folder_files(api_base, folder["id"], version)
             (raw / f"files-{folder['name']}.json").write_text(
                 json.dumps(items, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
