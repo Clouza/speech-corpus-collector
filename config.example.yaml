@@ -1,0 +1,47 @@
+storage:
+  root: "./data"
+
+language:
+  audio: "id"
+  transcript: "id"
+
+licensing:
+  allow_unknown: false
+
+download:
+  concurrency: 4
+  timeout_seconds: 60
+  retries: 5
+  user_agent: "indonesian-corpus-collector/0.1 (+local research corpus acquisition)"
+
+limits:
+  max_records_per_source: null
+
+sources:
+  common_voice:
+    enabled: true
+    dataset_id: "cmqinqwef00xonr07z4vbfovw"
+    version: "26.0"
+  fleurs:
+    enabled: true
+    dataset_id: "google/fleurs-r"
+    revision: "main"
+  librivox:
+    enabled: true
+    dataset_id: "indonesian-nlp/librivox-indonesia"
+    revision: "main"
+  homostoria:
+    enabled: true
+    dataset_id: "cmiepnyu1001jo207hzslvb5m"
+    version: "2025-11-25"
+  hari_minggoean:
+    enabled: true
+    dataset_id: "cmhlvswz200fio007c7szypw8"
+    version: "2025-11-05"
+  inesco:
+    enabled: true
+    dataset_id: "hzrznx3xs5"
+    version: "1"
+  tatoeba:
+    enabled: true
+    api_base: "https://api.tatoeba.org"

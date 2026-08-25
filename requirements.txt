@@ -1,0 +1,12 @@
+datasets>=4.0,<5
+httpx>=0.28,<1
+pandas>=2.2,<3
+pyarrow>=22,<26; python_version < "3.14"
+pyarrow>=25,<26; python_version >= "3.14"
+pydantic>=2.10,<3
+python-dotenv>=1.0,<2
+pyyaml>=6.0,<7
+rich>=13.9,<15
+soundfile>=0.13,<1
+tenacity>=9.0,<10
+xlrd>=2.0,<3
