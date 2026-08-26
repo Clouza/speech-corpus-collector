@@ -22,10 +22,11 @@ class CorpusRecord(BaseModel):
     dataset_version: str
     source_id: str
     source_url: str
-    audio_path: str
-    audio_format: str
+    audio_available: bool = True
+    audio_path: str | None = None
+    audio_format: str | None = None
     audio_duration_seconds: float | None = None
-    audio_language: str = "id"
+    audio_language: str | None = "id"
     transcript_language: str = "id"
     text: str
     raw_text: str | None = None
@@ -43,7 +44,7 @@ class CorpusRecord(BaseModel):
     attribution_required: bool | None = None
     share_alike_required: bool | None = None
     original_filename: str
-    sha256: str
+    sha256: str | None = None
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -53,4 +54,11 @@ class CorpusRecord(BaseModel):
             raise ValueError("start_ms and end_ms must be provided together")
         if self.start_ms is not None and (self.start_ms < 0 or self.end_ms <= self.start_ms):
             raise ValueError("timestamps must satisfy start_ms >= 0 and end_ms > start_ms")
+        audio_fields = (self.audio_path, self.audio_format, self.audio_language, self.sha256)
+        if self.audio_available and any(value is None for value in audio_fields):
+            raise ValueError("audio fields are required when audio_available is true")
+        if not self.audio_available and any(value is not None for value in audio_fields):
+            raise ValueError("audio fields must be null when audio_available is false")
+        if not self.audio_available and self.audio_duration_seconds is not None:
+            raise ValueError("audio duration must be null when audio_available is false")
         return self

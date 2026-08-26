@@ -46,6 +46,10 @@ class SourceConfig(BaseModel):
     version: str | None = None
     revision: str = "main"
     api_base: str | None = None
+    search_query: str | None = None
+    channel_id: str | None = None
+    max_videos: int = Field(default=10, ge=1, le=500)
+    include_auto_captions: bool = False
 
 
 class AppConfig(BaseModel):

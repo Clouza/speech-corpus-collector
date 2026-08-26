@@ -42,6 +42,27 @@ def append_record(
     return True
 
 
+def replace_records(path: Path, replacements: dict[str, CorpusRecord]) -> int:
+    if not replacements:
+        return 0
+    records = load_records(path)
+    replaced_ids: set[str] = set()
+    for index, existing in enumerate(records):
+        replacement = replacements.get(existing.record_id)
+        if replacement is not None:
+            records[index] = replacement
+            replaced_ids.add(existing.record_id)
+    missing = sorted(set(replacements) - replaced_ids)
+    if missing:
+        raise ValueError(f"cannot replace missing record IDs: {', '.join(missing)}")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        for item in records:
+            handle.write(item.model_dump_json() + "\n")
+    temporary.replace(path)
+    return len(replaced_ids)
+
+
 def export_records(source_directory: Path, output_directory: Path) -> tuple[int, Path, Path]:
     by_id: dict[str, CorpusRecord] = {}
     for source_file in sorted(source_directory.glob("*.jsonl")):

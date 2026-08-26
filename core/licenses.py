@@ -38,6 +38,14 @@ _KNOWN_LICENSES: dict[str, LicenseInfo] = {
         False,
         "known",
     ),
+    "CC-BY-3.0": LicenseInfo(
+        "CC-BY-3.0",
+        "https://creativecommons.org/licenses/by/3.0/",
+        True,
+        True,
+        False,
+        "known",
+    ),
     "CC-BY-SA-4.0": LicenseInfo(
         "CC-BY-SA-4.0",
         "https://creativecommons.org/licenses/by-sa/4.0/",
@@ -57,6 +65,7 @@ def _normalize(value: str) -> str:
         "CC0": "CC0-1.0",
         "CC-0": "CC0-1.0",
         "CC-BY-4": "CC-BY-4.0",
+        "CC-BY-3": "CC-BY-3.0",
         "CC-BY-SA-4": "CC-BY-SA-4.0",
         "PUBLIC-DOMAIN": "PUBLIC-DOMAIN",
         "PUBLICDOMAIN": "PUBLIC-DOMAIN",

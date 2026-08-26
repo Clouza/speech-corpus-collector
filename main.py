@@ -78,11 +78,12 @@ def run_collectors(
         summaries.append(summary)
         state, detail = collection_outcome(summary, dry_run)
         logger.info(
-            "source collection completed source=%s state=%s duration=%.1f downloaded=%s validated=%s skipped=%s failed=%s error=%s",
+            "source collection completed source=%s state=%s duration=%.1f downloaded=%s transcript_only=%s validated=%s skipped=%s failed=%s error=%s",
             key,
             state,
             summary.duration_seconds,
             summary.downloaded,
+            summary.transcript_only,
             summary.validated,
             summary.skipped,
             summary.failed,
@@ -94,22 +95,27 @@ def run_collectors(
 
 
 def collection_outcome(summary: CollectionSummary, dry_run: bool = False) -> tuple[str, str]:
+    def result(state: str, detail: str) -> tuple[str, str]:
+        if summary.notices:
+            detail = f"{detail}; {'; '.join(summary.notices)}"
+        return state, detail
+
     if summary.error:
-        return "failed", summary.error
+        return result("failed", summary.error)
     if summary.failed:
         detail = f"{summary.failed:,} Record(s) Failed"
         if summary.failure_examples:
             detail += f"; {summary.failure_examples[0]}"
-        return ("failed" if summary.validated == 0 else "partial"), detail
+        return result("failed" if summary.validated == 0 else "partial", detail)
     if dry_run:
-        return "success", f"{summary.planned:,} Record(s) Planned"
+        return result("success", f"{summary.planned:,} Record(s) Planned")
     if summary.downloaded == 0 and summary.unknown_license and summary.unknown_license == summary.skipped:
-        return "empty", "No Eligible Records with a Known License"
-    if summary.downloaded == 0 and summary.skipped:
-        return "success", f"No New Records; {summary.skipped:,} Already Processed or Skipped"
+        return result("empty", "No Eligible Records with a Known License")
+    if summary.downloaded == 0 and summary.transcript_only == 0 and summary.skipped:
+        return result("success", f"No New Records; {summary.skipped:,} Already Processed or Skipped")
     if summary.discovered == 0:
-        return "empty", "No Candidates Discovered"
-    return "success", f"{summary.validated:,} Record(s) Validated"
+        return result("empty", "No Candidates Discovered")
+    return result("success", f"{summary.validated:,} Record(s) Validated")
 
 
 def format_duration(seconds: float) -> str:
@@ -189,7 +195,7 @@ def print_collection_summary(summaries: list[CollectionSummary], dry_run: bool =
         else:
             records = (
                 f"Seen {item.discovered:,}; Downloaded {item.downloaded:,}; Validated {item.validated:,}; "
-                f"Skipped {item.skipped:,}; Failed {item.failed:,}; "
+                f"Transcript-Only {item.transcript_only:,}; Skipped {item.skipped:,}; Failed {item.failed:,}; "
                 f"Unknown License {item.unknown_license:,}"
             )
         table.add_row(

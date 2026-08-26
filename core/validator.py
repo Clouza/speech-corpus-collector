@@ -23,16 +23,9 @@ def validate_record(
     precomputed_sha256: str | None = None,
 ) -> ValidationResult:
     errors: list[str] = []
-    audio_path = Path(record.audio_path)
-    if not audio_path.is_absolute():
-        audio_path = storage_root / audio_path
-    if not audio_path.is_file():
-        errors.append("audio file does not exist")
-    elif audio_path.stat().st_size <= 0:
-        errors.append("audio file is empty")
     if not record.text.strip():
         errors.append("transcript is empty")
-    if record.audio_language != "id":
+    if record.audio_available and record.audio_language != "id":
         errors.append("audio language is not Indonesian")
     if record.transcript_language != "id":
         errors.append("transcript language is not Indonesian")
@@ -46,7 +39,17 @@ def validate_record(
         errors.append("timestamps are invalid")
 
     duration: float | None = None
-    if audio_path.is_file() and audio_path.stat().st_size > 0:
+    if not record.audio_available:
+        return ValidationResult(not errors, errors, None)
+
+    audio_path = Path(record.audio_path or "")
+    if not audio_path.is_absolute():
+        audio_path = storage_root / audio_path
+    if not audio_path.is_file():
+        errors.append("audio file does not exist")
+    elif audio_path.stat().st_size <= 0:
+        errors.append("audio file is empty")
+    else:
         try:
             info = sf.info(str(audio_path))
             duration = float(info.duration)

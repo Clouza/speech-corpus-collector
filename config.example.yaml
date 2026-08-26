@@ -45,3 +45,8 @@ sources:
   tatoeba:
     enabled: true
     api_base: "https://api.tatoeba.org"
+  youtube:
+    enabled: false
+    search_query: "bahasa Indonesia"
+    max_videos: 10
+    include_auto_captions: false

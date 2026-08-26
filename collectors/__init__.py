@@ -5,6 +5,7 @@ from collectors.homostoria import HomostoriaCollector
 from collectors.inesco import InescoCollector
 from collectors.librivox import LibriVoxCollector
 from collectors.tatoeba import TatoebaCollector
+from collectors.youtube import YouTubeCollector
 
 COLLECTORS = {
     "common-voice": CommonVoiceCollector,
@@ -14,6 +15,7 @@ COLLECTORS = {
     "hari-minggoean": HariMinggoeanCollector,
     "inesco": InescoCollector,
     "tatoeba": TatoebaCollector,
+    "youtube": YouTubeCollector,
 }
 
 __all__ = ["COLLECTORS"]
