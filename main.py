@@ -1,32 +1,35 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 
 from rich import box
 from rich.console import Console
 from rich.markup import escape
-from rich.progress import Progress, TextColumn, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from collectors import COLLECTORS
-from collectors.base import CollectionSummary
+from collectors.base import CollectionProgress, CollectionSummary
 from core.config import AppConfig, load_config
 from core.logging import configure_logging
-from core.metadata import export_records, load_records
-from core.storage import Manifest, Storage
-from core.validator import validate_record
+from core.metadata import assign_splits, load_records, split_counts, write_records
+from core.storage import Storage
+from core.validator import validate_records
+
 
 console = Console()
-RunProgressCallback = Callable[[str, str, str], None]
-
-
-def source_config_key(cli_key: str) -> str:
-    return cli_key.replace("-", "_")
+ProgressCallback = Callable[[str, CollectionProgress], None]
 
 
 def selected_sources(config: AppConfig, requested: str) -> list[str]:
@@ -35,8 +38,9 @@ def selected_sources(config: AppConfig, requested: str) -> list[str]:
             raise ValueError(f"unknown source: {requested}")
         return [requested]
     return [
-        key for key in COLLECTORS
-        if config.sources.get(source_config_key(key)) and config.sources[source_config_key(key)].enabled
+        key
+        for key in COLLECTORS
+        if config.sources.get(key) is not None and config.sources[key].enabled
     ]
 
 
@@ -44,243 +48,202 @@ def run_collectors(
     config: AppConfig,
     requested: str,
     dry_run: bool,
-    progress_callback: RunProgressCallback | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[CollectionSummary]:
     summaries: list[CollectionSummary] = []
-    logger = logging.getLogger("collector")
     for key in selected_sources(config, requested):
-        started_at = time.monotonic()
-        if progress_callback is not None:
-            progress_callback(key, "running", "Starting Collection")
-        logger.info("source collection started source=%s", key)
-        source_config = config.sources.get(source_config_key(key))
+        source_config = config.sources.get(key)
         if source_config is None:
-            summary = CollectionSummary(key, error="Source Is Missing from Configuration")
-            summary.duration_seconds = time.monotonic() - started_at
-            summaries.append(summary)
-            if progress_callback is not None:
-                progress_callback(key, "failed", summary.error)
+            summaries.append(CollectionSummary(key, error="Source Is Missing from Configuration"))
             continue
-        try:
-            collector = COLLECTORS[key](
-                config,
-                source_config,
-                progress_callback=(
-                    (lambda message, source=key: progress_callback(source, "running", message))
-                    if progress_callback is not None
-                    else None
+        collector = COLLECTORS[key](
+            config,
+            source_config,
+            progress_callback=(
+                (lambda event, source=key: progress_callback(source, event))
+                if progress_callback is not None
+                else None
+            ),
+        )
+        summary = collector.collect(dry_run=dry_run)
+        summaries.append(summary)
+        if progress_callback is not None:
+            progress_callback(
+                key,
+                CollectionProgress(
+                    message=summary.error or "Completed",
+                    collected_records=summary.collected,
+                    finished=True,
                 ),
             )
-            summary = collector.collect(dry_run=dry_run)
-        except Exception as exc:
-            summary = CollectionSummary(key, error=str(exc))
-        summary.duration_seconds = time.monotonic() - started_at
-        summaries.append(summary)
-        state, detail = collection_outcome(summary, dry_run)
-        logger.info(
-            "source collection completed source=%s state=%s duration=%.1f downloaded=%s transcript_only=%s validated=%s skipped=%s failed=%s error=%s",
-            key,
-            state,
-            summary.duration_seconds,
-            summary.downloaded,
-            summary.transcript_only,
-            summary.validated,
-            summary.skipped,
-            summary.failed,
-            summary.error or "",
-        )
-        if progress_callback is not None:
-            progress_callback(key, state, detail)
     return summaries
 
 
-def collection_outcome(summary: CollectionSummary, dry_run: bool = False) -> tuple[str, str]:
-    def result(state: str, detail: str) -> tuple[str, str]:
-        if summary.notices:
-            detail = f"{detail}; {'; '.join(summary.notices)}"
-        return state, detail
-
-    if summary.error:
-        return result("failed", summary.error)
-    if summary.failed:
-        detail = f"{summary.failed:,} Record(s) Failed"
-        if summary.failure_examples:
-            detail += f"; {summary.failure_examples[0]}"
-        return result("failed" if summary.validated == 0 else "partial", detail)
-    if dry_run:
-        return result("success", f"{summary.planned:,} Record(s) Planned")
-    if summary.downloaded == 0 and summary.unknown_license and summary.unknown_license == summary.skipped:
-        return result("empty", "No Eligible Records with a Known License")
-    if summary.downloaded == 0 and summary.transcript_only == 0 and summary.skipped:
-        return result("success", f"No New Records; {summary.skipped:,} Already Processed or Skipped")
-    if summary.discovered == 0:
-        return result("empty", "No Candidates Discovered")
-    return result("success", f"{summary.validated:,} Record(s) Validated")
-
-
-def format_duration(seconds: float) -> str:
-    total_seconds = max(0, round(seconds))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"{hours:d}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes:d}:{seconds:02d}"
-
-
-def collect_with_progress(config: AppConfig, requested: str, dry_run: bool) -> list[CollectionSummary]:
+def collect_with_progress(config: AppConfig, requested: str) -> list[CollectionSummary]:
     source_keys = selected_sources(config, requested)
-    state_styles = {
-        "queued": ("[dim]-[/dim]", "[dim]Queued[/dim]"),
-        "running": ("[cyan]..[/cyan]", ""),
-        "success": ("[green]OK[/green]", ""),
-        "empty": ("[yellow]--[/yellow]", ""),
-        "partial": ("[yellow]![/yellow]", ""),
-        "failed": ("[red]X[/red]", ""),
-    }
     progress = Progress(
-        TextColumn("{task.fields[icon]}"),
         TextColumn("[bold]{task.description}[/bold]", justify="left"),
-        TextColumn("{task.fields[status]}", justify="left"),
+        BarColumn(),
+        TaskProgressColumn(),
+        MofNCompleteColumn(),
+        TextColumn("{task.fields[records]}", justify="right"),
         TimeElapsedColumn(),
+        TimeRemainingColumn(),
+        TextColumn("{task.fields[status]}", justify="left"),
         console=console,
         expand=True,
     )
-    tasks = {
-        key: progress.add_task(
-            key.replace("-", " ").title(),
-            total=1,
-            completed=0,
-            start=False,
-            icon=state_styles["queued"][0],
-            status=state_styles["queued"][1],
+    tasks = {}
+    record_counts = {key: 0 for key in source_keys}
+    for key in source_keys:
+        source_config = config.sources.get(key)
+        total = 1
+        if source_config is not None:
+            total = source_config.max_videos if key == "youtube" else source_config.max_subtitles
+        tasks[key] = progress.add_task(
+            key.title(),
+            total=total,
+            records="0 Records",
+            status="Queued",
         )
-        for key in source_keys
-    }
-    started_sources: set[str] = set()
 
-    def update_progress(source: str, state: str, detail: str) -> None:
+    def update(source: str, event: CollectionProgress) -> None:
         task_id = tasks[source]
-        if state == "running" and source not in started_sources:
-            progress.start_task(task_id)
-            started_sources.add(source)
-        icon, default_status = state_styles[state]
-        progress.update(
-            task_id,
-            completed=1 if state in {"success", "empty", "partial", "failed"} else 0,
-            icon=icon,
-            status=escape(detail) if detail else default_status,
-        )
+        record_counts[source] = max(record_counts[source], event.collected_records)
+        values: dict[str, object] = {
+            "records": f"{record_counts[source]:,} Records",
+            "status": escape(event.message),
+        }
+        if event.total_items is not None:
+            values["total"] = max(event.total_items, 1)
+        if event.completed_items is not None:
+            values["completed"] = event.completed_items
+        if event.finished:
+            task = progress.tasks[task_id]
+            values["completed"] = task.total or 1
+        progress.update(task_id, **values)
+        if event.finished:
+            progress.stop_task(task_id)
 
     with progress:
-        return run_collectors(config, requested, dry_run, progress_callback=update_progress)
+        return run_collectors(config, requested, dry_run=False, progress_callback=update)
 
 
-def print_collection_summary(summaries: list[CollectionSummary], dry_run: bool = False) -> None:
+def print_collection_summary(summaries: list[CollectionSummary], dry_run: bool) -> None:
     table = Table(title="Collection Summary", box=box.ASCII, expand=True)
     table.add_column("Source", no_wrap=True)
     table.add_column("Result", no_wrap=True)
-    table.add_column("Records", overflow="fold", ratio=2)
-    table.add_column("Duration", justify="right", no_wrap=True)
-    table.add_column("Details", overflow="fold", ratio=3)
-    for item in summaries:
-        state, details = collection_outcome(item, dry_run)
-        result = {
-            "failed": "[red]Failed[/red]",
-            "partial": "[yellow]Partial[/yellow]",
-            "empty": "[yellow]No Records[/yellow]",
-            "success": "[green]Success[/green]",
-        }[state]
-        if dry_run:
-            records = f"Planned {item.planned:,}"
+    table.add_column("Collection", justify="right")
+    table.add_column("Details")
+    for summary in summaries:
+        if summary.error:
+            result = "[red]Failed[/red]"
+        elif summary.failed:
+            result = "[yellow]Partial[/yellow]"
         else:
-            records = (
-                f"Seen {item.discovered:,}; Downloaded {item.downloaded:,}; Validated {item.validated:,}; "
-                f"Transcript-Only {item.transcript_only:,}; Skipped {item.skipped:,}; Failed {item.failed:,}; "
-                f"Unknown License {item.unknown_license:,}"
-            )
-        table.add_row(
-            item.source,
-            result,
-            records,
-            format_duration(item.duration_seconds),
-            escape(details),
+            result = "[green]Success[/green]"
+        records = (
+            f"Up to {summary.planned:,} Source Items"
+            if dry_run
+            else f"Collected {summary.collected:,}; Skipped {summary.skipped:,}; Failed {summary.failed:,}"
         )
+        details = summary.error or "; ".join(summary.notices) or "Completed"
+        table.add_row(summary.source, result, records, escape(details))
     console.print(table)
+
+
+def command_collect(config: AppConfig, requested: str, dry_run: bool) -> int:
+    summaries = (
+        run_collectors(config, requested, dry_run=True)
+        if dry_run
+        else collect_with_progress(config, requested)
+    )
+    print_collection_summary(summaries, dry_run)
+    if dry_run:
+        return 1 if any(summary.error for summary in summaries) else 0
+    storage = Storage(config.storage.root)
+    existing = load_records(storage.catalog_path)
+    by_id = {record.id: record for record in existing}
+    for summary in summaries:
+        for record in summary.records:
+            by_id[record.id] = record
+    records = assign_splits(by_id.values(), config.splits)
+    result = validate_records(records)
+    if not result.valid:
+        for error in result.errors[:10]:
+            console.print(f"[red]Validation Failed:[/red] {escape(error)}")
+        return 1
+    count = write_records(storage.catalog_path, records)
+    counts = split_counts(records)
+    console.print(f"Catalog: {storage.catalog_path}")
+    console.print(
+        f"Records: {count:,} | Train: {counts['train']:,} | "
+        f"Eval: {counts['eval']:,} | Test: {counts['test']:,}"
+    )
+    return 1 if any(summary.error or summary.failed for summary in summaries) else 0
 
 
 def command_sources(config: AppConfig) -> None:
-    table = Table(title="Available Collectors")
+    table = Table(title="Available Sources", box=box.ASCII)
     table.add_column("Source")
     table.add_column("Enabled")
-    table.add_column("Availability")
-    table.add_column("Credentials")
+    table.add_column("Required Credentials")
+    table.add_column("Optional Credentials")
     for key, collector_type in COLLECTORS.items():
-        configured = config.sources.get(source_config_key(key))
+        configured = config.sources.get(key)
         table.add_row(
             key,
-            "Yes" if configured and configured.enabled else "No",
-            collector_type.availability.title() if collector_type.availability == "available" else collector_type.availability,
+            "Yes" if configured is not None and configured.enabled else "No",
             ", ".join(collector_type.credentials) or "None",
+            ", ".join(collector_type.optional_credentials) or "None",
         )
     console.print(table)
+
+
+def command_status(config: AppConfig) -> int:
+    storage = Storage(config.storage.root)
+    records = load_records(storage.catalog_path)
+    counts = split_counts(records)
+    source_counts: dict[str, int] = {}
+    for record in records:
+        source = record.source.partition("/")[0]
+        source_counts[source] = source_counts.get(source, 0) + 1
+    console.print(f"Catalog: {storage.catalog_path}")
+    console.print(f"Records: {len(records):,}")
+    console.print(
+        f"Train: {counts['train']:,} | Eval: {counts['eval']:,} | Test: {counts['test']:,}"
+    )
+    for source, count in sorted(source_counts.items()):
+        console.print(f"{source.title()}: {count:,}")
+    return 0
 
 
 def command_validate(config: AppConfig) -> int:
     storage = Storage(config.storage.root)
-    records = []
-    for source_file in storage.source_metadata.glob("*.jsonl"):
-        records.extend(load_records(source_file))
-    valid = failed = unknown = 0
-    total_seconds = 0.0
-    for record in records:
-        result = validate_record(record, storage.root, config.licensing.allow_unknown)
-        if result.valid:
-            valid += 1
-            total_seconds += result.duration_seconds or 0
-        else:
-            failed += 1
-            console.print(f"[red]Validation Failed[/red] {record.record_id}: {', '.join(result.errors)}")
-        if record.license_status != "known":
-            unknown += 1
-    console.print(f"Validated: {valid:,}")
-    console.print(f"Failed: {failed:,}")
-    console.print(f"Unknown License: {unknown:,}")
-    console.print(f"Total Audio: {total_seconds / 3600:.2f} Hours")
-    return 1 if failed else 0
-
-
-def command_status(config: AppConfig) -> None:
-    storage = Storage(config.storage.root)
-    table = Table(title="Corpus Status")
-    table.add_column("Source")
-    for state in ("pending", "downloaded", "validated", "failed", "skipped"):
-        table.add_column(state.replace("_", " ").title(), justify="right")
-    for key in COLLECTORS:
-        manifest = Manifest(storage.manifests / f"{key}.json", key)
-        counts = manifest.counts()
-        table.add_row(key, *(str(counts[state]) for state in ("pending", "downloaded", "validated", "failed", "skipped")))
-    console.print(table)
-
-
-def command_export(config: AppConfig) -> None:
-    storage = Storage(config.storage.root)
-    count, jsonl, parquet = export_records(storage.source_metadata, storage.metadata)
-    console.print(f"Exported {count:,} Records")
-    console.print(f"JSONL: {jsonl}")
-    console.print(f"Parquet: {parquet}")
+    records = load_records(storage.catalog_path)
+    result = validate_records(records)
+    if result.valid:
+        console.print(f"Validated: {len(records):,} Records")
+        return 0
+    for error in result.errors:
+        console.print(f"[red]Validation Failed:[/red] {escape(error)}")
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Collect License-Aware Indonesian Speech Corpora")
-    parser.add_argument("--config", type=Path, default=Path("config.yaml"), help="Configuration file path")
+    parser = argparse.ArgumentParser(description="Collect Indonesian Text Corpora")
+    parser.add_argument("--config", type=Path, default=Path("config.yaml"), help="Configuration File Path")
     subcommands = parser.add_subparsers(dest="command", required=True)
-    subcommands.add_parser("sources", help="List available collectors")
-    collect = subcommands.add_parser("collect", help="Collect one or all sources")
+    subcommands.add_parser(
+        "list-sources",
+        aliases=["sources"],
+        help="List Available Sources",
+    )
+    collect = subcommands.add_parser("collect", help="Collect Corpus Records")
     collect.add_argument("source", choices=[*COLLECTORS, "all"])
-    collect.add_argument("--dry-run", action="store_true", help="Show planned work without downloads")
-    subcommands.add_parser("validate", help="Validate existing records")
-    subcommands.add_parser("status", help="Show manifest statistics")
-    subcommands.add_parser("export", help="Rebuild combined metadata")
+    collect.add_argument("--dry-run", action="store_true", help="Show Planned Collection")
+    subcommands.add_parser("status", help="Show Catalog Statistics")
+    subcommands.add_parser("validate", help="Validate Catalog Records")
     return parser
 
 
@@ -289,26 +252,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
     except Exception as exc:
-        console.print(f"[red]Configuration Error:[/red] {exc}")
+        console.print(f"[red]Configuration Error:[/red] {escape(str(exc))}")
         return 2
     configure_logging(args.config.parent / "logs")
-    if args.command == "sources":
+    if args.command in {"list-sources", "sources"}:
         command_sources(config)
         return 0
     if args.command == "collect":
-        summaries = collect_with_progress(config, args.source, args.dry_run)
-        print_collection_summary(summaries, args.dry_run)
-        if not args.dry_run:
-            command_export(config)
-        return 1 if any(summary.error or summary.failed for summary in summaries) else 0
+        return command_collect(config, args.source, args.dry_run)
+    if args.command == "status":
+        return command_status(config)
     if args.command == "validate":
         return command_validate(config)
-    if args.command == "status":
-        command_status(config)
-        return 0
-    if args.command == "export":
-        command_export(config)
-        return 0
     return 2
 
 

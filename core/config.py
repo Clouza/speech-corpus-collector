@@ -6,34 +6,32 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class StorageConfig(BaseModel):
     root: Path = Path("data")
 
 
-class LanguageConfig(BaseModel):
-    audio: str = "id"
-    transcript: str = "id"
+class SplitConfig(BaseModel):
+    train: float = Field(default=0.8, ge=0, le=1)
+    eval: float = Field(default=0.1, ge=0, le=1)
+    test: float = Field(default=0.1, ge=0, le=1)
+    seed: str = "indonesian-corpus-v1"
 
-    @field_validator("audio", "transcript")
-    @classmethod
-    def require_indonesian(cls, value: str) -> str:
-        if value.lower() != "id":
-            raise ValueError("only Indonesian language code 'id' is supported")
-        return value.lower()
-
-
-class LicensingConfig(BaseModel):
-    allow_unknown: bool = False
+    @model_validator(mode="after")
+    def validate_ratios(self) -> SplitConfig:
+        if abs(self.train + self.eval + self.test - 1.0) > 1e-9:
+            raise ValueError("split ratios must total 1.0")
+        if not self.seed.strip():
+            raise ValueError("split seed must not be empty")
+        return self
 
 
 class DownloadConfig(BaseModel):
-    concurrency: int = Field(default=4, ge=1, le=32)
     timeout_seconds: float = Field(default=60, gt=0)
     retries: int = Field(default=5, ge=0, le=20)
-    user_agent: str = "indonesian-corpus-collector/0.1 (+local research corpus acquisition)"
+    user_agent: str = "indonesian-corpus-collector/0.2"
 
 
 class LimitsConfig(BaseModel):
@@ -42,20 +40,25 @@ class LimitsConfig(BaseModel):
 
 class SourceConfig(BaseModel):
     enabled: bool = True
-    dataset_id: str | None = None
-    version: str | None = None
-    revision: str = "main"
     api_base: str | None = None
     search_query: str | None = None
     channel_id: str | None = None
+    language: str = "id"
     max_videos: int = Field(default=10, ge=1, le=500)
+    max_subtitles: int = Field(default=10, ge=1, le=500)
     include_auto_captions: bool = False
+
+    @field_validator("language")
+    @classmethod
+    def require_indonesian(cls, value: str) -> str:
+        if value.strip().lower() != "id":
+            raise ValueError("only Indonesian language code 'id' is supported")
+        return "id"
 
 
 class AppConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
-    language: LanguageConfig = Field(default_factory=LanguageConfig)
-    licensing: LicensingConfig = Field(default_factory=LicensingConfig)
+    splits: SplitConfig = Field(default_factory=SplitConfig)
     download: DownloadConfig = Field(default_factory=DownloadConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     sources: dict[str, SourceConfig] = Field(default_factory=dict)

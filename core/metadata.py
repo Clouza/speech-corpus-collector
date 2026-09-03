@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import json
+import hashlib
+from collections.abc import Iterable
 from pathlib import Path
 
-import pandas as pd
+from core.config import SplitConfig
+from models.record import CorpusRecord, CorpusSplit
 
-from models.record import CorpusRecord
+
+SPLIT_NAMES: tuple[CorpusSplit, ...] = ("train", "eval", "test")
 
 
 def load_records(path: Path) -> list[CorpusRecord]:
@@ -23,61 +26,57 @@ def load_records(path: Path) -> list[CorpusRecord]:
     return records
 
 
-def load_record_ids(path: Path) -> set[str]:
-    return {record.record_id for record in load_records(path)}
+def _split_counts(total: int, config: SplitConfig) -> dict[CorpusSplit, int]:
+    ratios = {"train": config.train, "eval": config.eval, "test": config.test}
+    exact = {name: total * ratio for name, ratio in ratios.items()}
+    counts = {name: int(value) for name, value in exact.items()}
+    remainder = total - sum(counts.values())
+    order = sorted(
+        SPLIT_NAMES,
+        key=lambda name: (exact[name] - counts[name], ratios[name], -SPLIT_NAMES.index(name)),
+        reverse=True,
+    )
+    for name in order[:remainder]:
+        counts[name] += 1
+    return counts
 
 
-def append_record(
-    path: Path,
-    record: CorpusRecord,
-    known_record_ids: set[str] | None = None,
-) -> bool:
+def assign_splits(records: Iterable[CorpusRecord], config: SplitConfig) -> list[CorpusRecord]:
+    by_id = {record.id: record for record in records}
+    ordered = sorted(
+        by_id.values(),
+        key=lambda record: hashlib.sha256(
+            f"{config.seed}:{record.id}".encode("utf-8")
+        ).digest(),
+    )
+    counts = _split_counts(len(ordered), config)
+    train_boundary = counts["train"]
+    eval_boundary = counts["train"] + counts["eval"]
+    assigned: list[CorpusRecord] = []
+    for index, record in enumerate(ordered):
+        if index < train_boundary:
+            split: CorpusSplit = "train"
+        elif index < eval_boundary:
+            split = "eval"
+        else:
+            split = "test"
+        assigned.append(record.model_copy(update={"split": split}))
+    return sorted(assigned, key=lambda record: record.id)
+
+
+def write_records(path: Path, records: Iterable[CorpusRecord]) -> int:
+    materialized = list(records)
     path.parent.mkdir(parents=True, exist_ok=True)
-    record_ids = known_record_ids if known_record_ids is not None else load_record_ids(path)
-    if record.record_id in record_ids:
-        return False
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(record.model_dump_json() + "\n")
-    record_ids.add(record.record_id)
-    return True
-
-
-def replace_records(path: Path, replacements: dict[str, CorpusRecord]) -> int:
-    if not replacements:
-        return 0
-    records = load_records(path)
-    replaced_ids: set[str] = set()
-    for index, existing in enumerate(records):
-        replacement = replacements.get(existing.record_id)
-        if replacement is not None:
-            records[index] = replacement
-            replaced_ids.add(existing.record_id)
-    missing = sorted(set(replacements) - replaced_ids)
-    if missing:
-        raise ValueError(f"cannot replace missing record IDs: {', '.join(missing)}")
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", encoding="utf-8") as handle:
-        for item in records:
-            handle.write(item.model_dump_json() + "\n")
-    temporary.replace(path)
-    return len(replaced_ids)
-
-
-def export_records(source_directory: Path, output_directory: Path) -> tuple[int, Path, Path]:
-    by_id: dict[str, CorpusRecord] = {}
-    for source_file in sorted(source_directory.glob("*.jsonl")):
-        for record in load_records(source_file):
-            by_id[record.record_id] = record
-    records = [by_id[key] for key in sorted(by_id)]
-    output_directory.mkdir(parents=True, exist_ok=True)
-    jsonl_path = output_directory / "records.jsonl"
-    parquet_path = output_directory / "records.parquet"
-    with jsonl_path.open("w", encoding="utf-8") as handle:
-        for record in records:
+        for record in materialized:
             handle.write(record.model_dump_json() + "\n")
-    rows = [record.model_dump(mode="json") for record in records]
-    frame = pd.DataFrame(rows)
-    if "extra" in frame.columns:
-        frame["extra"] = frame["extra"].map(lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True))
-    frame.to_parquet(parquet_path, index=False)
-    return len(records), jsonl_path, parquet_path
+    temporary.replace(path)
+    return len(materialized)
+
+
+def split_counts(records: Iterable[CorpusRecord]) -> dict[str, int]:
+    counts = {name: 0 for name in SPLIT_NAMES}
+    for record in records:
+        counts[record.split] += 1
+    return counts

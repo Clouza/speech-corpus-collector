@@ -1,22 +1,15 @@
 [project]
 name = "indonesian-corpus-collector"
-version = "0.1.0"
-description = "License-aware Indonesian speech corpus acquisition and validation"
+version = "0.2.0"
+description = "Indonesian text corpus collection from captions and subtitles"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "datasets>=4.0,<5",
   "httpx>=0.28,<1",
-  "pandas>=2.2,<3",
-  "pyarrow>=22,<26; python_version < '3.14'",
-  "pyarrow>=25,<26; python_version >= '3.14'",
   "pydantic>=2.10,<3",
   "python-dotenv>=1.0,<2",
   "pyyaml>=6.0,<7",
   "rich>=13.9,<15",
-  "soundfile>=0.13,<1",
-  "tenacity>=9.0,<10",
-  "xlrd>=2.0,<3",
   "yt-dlp>=2025.8,<2027",
 ]
 
@@ -29,3 +22,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["collectors", "core", "models"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [".venv", "data", "logs", "pytest-cache-files-*", ".test-tmp*"]

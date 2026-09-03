@@ -1,186 +1,130 @@
 # Indonesian Corpus Collector
 
-Collect Indonesian speech datasets from legitimate public distributions, preserve provenance and licensing, normalize metadata, validate audio, and store everything locally. This project performs dataset acquisition only; it does not train models.
+Collect Indonesian text from YouTube captions and movie subtitles. The collector stores raw source files for provenance and produces one compact JSONL catalog for training, evaluation, and API consumption.
+
+The project does not download audio, generate transcripts, or train models.
+
+Legacy collector modules remain in the repository for reference, but only `youtube` and `movies` are registered and supported by the active pipeline.
+
+## Requirements
+
+- Python 3.12 or newer
+- A YouTube Data API v3 key
+- An OpenSubtitles REST API key
+- Optional OpenSubtitles account credentials for authenticated download limits
 
 ## Quick Start
 
-Requirements: Python 3.12 or newer and Git. Python 3.14 is supported with the pinned binary `pyarrow` dependency. `ffmpeg` on `PATH` is optional: the YouTube collector stores transcripts and metadata without audio when it is unavailable.
+1. Create and activate the virtual environment. Skip this step when one is already active.
+
+   ```powershell
+   py -3 -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   ```
+
+2. Install dependencies and create the local configuration files.
+
+   ```powershell
+   python -m pip install -r requirements.txt
+   Copy-Item .env.example .env
+   Copy-Item config.example.yaml config.yaml
+   ```
+
+3. Fill in `.env`.
+
+   ```dotenv
+   YOUTUBE_API_KEY=
+   OPENSUBTITLES_API_KEY=
+   OPENSUBTITLES_USERNAME=
+   OPENSUBTITLES_PASSWORD=
+   ```
+
+   `OPENSUBTITLES_USERNAME` and `OPENSUBTITLES_PASSWORD` are optional. When both are present, the collector requests a bearer token automatically and keeps it only in memory. API keys and passwords must never be committed.
+
+4. Review source queries, limits, and split ratios in `config.yaml`, then verify and collect.
+
+   ```powershell
+python .\main.py list-sources
+python .\main.py sources # legacy alias
+   python .\main.py collect all
+   ```
+
+The catalog is written to `data/catalog/corpus.jsonl`.
+
+## Other Commands
 
 ```powershell
-git clone <repository-url>
-Set-Location indonesian-corpus-collector
-
-py -3.14 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install --only-binary=pyarrow -r requirements.txt
-
-Copy-Item .env.example .env
-Copy-Item config.example.yaml config.yaml
-python main.py sources
-python main.py collect all --dry-run
+python .\main.py collect youtube
+python .\main.py collect movies
+python .\main.py collect all --dry-run
+python .\main.py status
+python .\main.py validate
 ```
 
-If the activated shell cannot find an installed package, run the virtual environment explicitly:
-
-```powershell
-.\.venv\Scripts\python.exe main.py sources
-```
-
-## Credentials and Configuration
-
-The supported credentials are:
-
-```dotenv
-MDC_API_KEY=
-YOUTUBE_API_KEY=
-```
-
-`MDC_API_KEY` is required for Common Voice, Podcast Homostoria, and Podcast Hari Minggoean. Create the key in Mozilla Data Collective and accept the terms on each dataset page before collecting; a valid key alone can still receive HTTP 403 until those terms are accepted.
-
-`YOUTUBE_API_KEY` is required for YouTube discovery. Enable YouTube Data API v3 in the Google Cloud project that owns the key. The collector uses the official API to discover and verify Creative Commons videos, then uses `yt-dlp` to acquire an available Indonesian caption track. When `ffmpeg` is available it also stores FLAC audio; otherwise it emits an explicit notice and stores transcript-only records. Manual captions are required by default; set `include_auto_captions: true` only when machine-generated transcripts are acceptable for your corpus.
-
-The example configuration keeps YouTube disabled to avoid consuming search quota during `collect all`. After adding the key, adjust `sources.youtube.search_query`, then either run `python main.py collect youtube` directly or set `sources.youtube.enabled: true` to include it in `collect all`.
-
-Copy `config.example.yaml` to `config.yaml`. To perform a small collection, set:
-
-```yaml
-limits:
-  max_records_per_source: 3
-```
-
-Unknown licenses remain blocked by default. Keep `licensing.allow_unknown: false` unless you have independently reviewed the source.
-
-## Commands
-
-| Command | Purpose |
-| --- | --- |
-| `python main.py sources` | List collectors, availability, configuration, and required credentials. |
-| `python main.py collect <source>` | Collect one source, for example `fleurs` or `inesco`. |
-| `python main.py collect all` | Run every enabled collector; one source failure does not stop the others. |
-| `python main.py collect all --dry-run` | Show the planned collection without downloading audio. |
-| `python main.py status` | Summarize manifests and locally collected records. |
-| `python main.py validate` | Revalidate the existing local corpus. |
-| `python main.py export` | Rebuild combined JSONL and Parquet metadata. |
-
-You may collect sources one at a time or use `all`. Repeated runs resume from manifests and skip already validated files.
-
-## Included Sources
-
-| CLI Name | Dataset | License | Access |
-| --- | --- | --- | --- |
-| `common-voice` | Mozilla Common Voice Indonesian | CC0-1.0 | `MDC_API_KEY` and accepted dataset terms |
-| `fleurs` | Google FLEURS `id_id` | CC BY 4.0 | Public Hugging Face distribution |
-| `inesco` | Indonesian Expressive Speech Corpus | CC BY 4.0 | Public Mendeley Data distribution |
-| `homostoria` | Podcast Homostoria | CC BY-SA 4.0 | `MDC_API_KEY` and accepted dataset terms |
-| `hari-minggoean` | Podcast Hari Minggoean | CC BY-SA 4.0 | `MDC_API_KEY` and accepted dataset terms |
-| `librivox` | LibriVox Indonesia | Public Domain | Public dataset distribution |
-| `tatoeba` | Tatoeba Indonesian audio | Per-item | Public API; only explicitly reusable audio is downloaded |
-| `youtube` | YouTube Indonesian caption segments | CC BY 3.0 | `YOUTUBE_API_KEY`; public Creative Commons videos only |
-
-Large archive-based sources may download an upstream archive before applying a record limit. A source that becomes unavailable fails gracefully and does not trigger a fallback scraper.
+The collector is idempotent at catalog level. Existing records are merged by deterministic ID, then every record is assigned a fresh deterministic split using the configured ratios and seed.
 
 ## Output
 
 ```text
 data/
-├── audio/<source>/<record_id>.<ext>
-├── transcripts/<source>/<record_id>.txt
-├── raw/<source>/
-├── manifests/<source>.json
-└── metadata/
-    ├── sources/<source>.jsonl
-    ├── records.jsonl
-    └── records.parquet
-logs/collector-YYYY-MM-DD.log
+├── raw/
+│   ├── youtube/
+│   └── movies/
+└── catalog/
+    └── corpus.jsonl
 ```
 
-Audio is never stored in a database. Raw source metadata is retained, and deterministic record IDs, SHA-256 hashes, and manifests provide deduplication and resume support. Transcript-only records use `audio_available: false` and null audio fields; they can be upgraded in place on a later run when audio processing becomes available.
+YouTube JSON3 captions and movie subtitle files remain in `raw`. No audio, per-record transcript, manifest, source metadata, or Parquet output is created.
 
-## Adding a New Source
+Each line of `corpus.jsonl` contains exactly these fields:
 
-Use the following workflow so the new collector inherits storage, validation, licensing, resume, and export behavior.
-
-1. Verify the current official API, repository, download endpoint, dataset version, and license. Do not add brittle scraping or bypass authentication, access controls, rate limits, or usage terms. If automation is not permitted, document the source as manual/unavailable instead.
-2. Add `collectors/<source_key>.py`. Subclass `BaseCollector`, define its identity fields, and implement `discover()` to yield `Candidate` objects.
-3. Add the import and CLI name to `COLLECTORS` in `collectors/__init__.py`.
-4. Add the source under `sources` in `config.example.yaml`. CLI names use hyphens, while YAML keys use underscores, such as `example-source` and `example_source`.
-5. If authentication is genuinely required, list the environment variable in the collector's `credentials` tuple, read it through the existing credential helper, and add only its empty name to `.env.example`. Never hardcode or log secrets.
-6. Resolve every item's stated license through `core/licenses.py`. Add a known license mapping only when its explicit terms are verified. Unknown or prohibited licenses must remain rejected by default.
-7. Run the verification commands below with a low record limit, then run the same collection again to confirm idempotency.
-
-A minimal collector looks like this:
-
-```python
-from collections.abc import Iterable
-
-from collectors.base import BaseCollector, Candidate
-from core.licenses import resolve_license
-
-
-class ExampleSourceCollector(BaseCollector):
-    key = "example-source"
-    display_name = "Example Source Indonesian"
-    dataset_name = "Example Source"
-    dataset_version = "1.0"
-    credentials = ("EXAMPLE_TOKEN",)  # omit when public
-
-    def discover(self) -> Iterable[Candidate]:
-        license_info = resolve_license("CC-BY-4.0")
-        for item in self._load_official_index():
-            yield Candidate(
-                source_id=str(item["id"]),
-                source_url=item["attribution_url"],
-                text=item["transcript"],
-                license_info=license_info,
-                original_filename=item["filename"],
-                audio_url=item["audio_url"],
-                speaker_id=item.get("speaker_id"),
-                extra={"upstream_metadata": item},
-            )
+```json
+{"id":"abc123","text":"gue tadi ke sana bareng temen","source":"youtube/Judul Video","license":"CC-BY-3.0","crawl_date":"2026-09-04","split":"train"}
 ```
 
-Each candidate requires `source_id`, `source_url`, non-empty `text`, `license_info`, `original_filename`, and one audio input: `audio_url`, `audio_bytes`, or `local_audio_path`. Put timestamps, speaker, split, category, and emotion in their dedicated fields; keep remaining source metadata in `extra`.
+| Field | Meaning |
+| --- | --- |
+| `id` | Deterministic 24-character record identifier |
+| `text` | Normalized caption or subtitle text |
+| `source` | Explicit media label, such as `youtube/Judul Video` or `movies/Judul Film (2026)` |
+| `license` | Source-provided license, otherwise `unknown` |
+| `crawl_date` | UTC collection date in `YYYY-MM-DD` format |
+| `split` | `train`, `eval`, or `test` |
 
-Register it in `collectors/__init__.py`:
+## Dynamic Splits
 
-```python
-from collectors.example_source import ExampleSourceCollector
-
-COLLECTORS["example-source"] = ExampleSourceCollector
-```
-
-Add its configuration:
+The default split configuration is:
 
 ```yaml
-sources:
-  example_source:
-    enabled: true
-    dataset_id: "publisher/dataset"
-    version: "1.0"
+splits:
+  train: 0.8
+  eval: 0.1
+  test: 0.1
+  seed: "indonesian-corpus-v1"
 ```
 
-Verify the integration:
+Counts use a largest-remainder allocation, so all records are assigned even when the total does not divide cleanly. For 500 records, the catalog contains exactly 400 train, 50 eval, and 50 test records. The seed makes the shuffle reproducible.
 
-```powershell
-python main.py sources
-python main.py collect example-source --dry-run
-python main.py collect example-source
-python main.py validate
-python main.py export
-```
+## Collection Progress
 
-`BaseCollector` supplies stable record IDs, license enforcement, deterministic storage, hashing, manifests, deduplication, validation, transcripts, and normalized source metadata. The source module should focus on official discovery and accurate field mapping.
+Live collection displays one progress row per source with the processed video or subtitle count, percentage, generated record count, elapsed time, estimated remaining time, and current media title. The estimate becomes more accurate after at least one source item has completed.
 
-## Licensing
+Dry-run reports the configured maximum source items. It does not guess the final record count because the number of caption or subtitle cues is only known after each raw subtitle has been parsed.
 
-Every record retains its original source, URL, dataset version, retrieval time, license, and license attributes. Combining datasets does not replace or change their individual licenses. The recorded flags mirror explicit source license terms and are not legal advice.
+## Source Behavior
 
-## Troubleshooting
+### YouTube
 
-- `ModuleNotFoundError: rich`: the command is using a different Python installation; activate `.venv` or use `.\.venv\Scripts\python.exe` explicitly.
-- `Failed to build pyarrow`: upgrade `pip`, then install with `python -m pip install --only-binary=pyarrow -r requirements.txt`.
-- MDC HTTP 401: check `MDC_API_KEY`. MDC HTTP 403: sign in and accept that dataset's terms.
-- YouTube authentication or quota errors: verify `YOUTUBE_API_KEY`, confirm YouTube Data API v3 is enabled, and inspect the Google Cloud quota page.
-- YouTube asset errors: confirm `yt-dlp` is installed and current. Videos without eligible Indonesian captions are skipped. Missing `ffmpeg` is reported as a notice and does not stop transcript collection.
-- Inspect the newest file under `logs/` for source, record, retry, license, and validation errors.
+The YouTube collector uses the official Data API to discover Creative Commons videos with Indonesian captions. `yt-dlp` downloads only the selected JSON3 caption track; media and audio are always skipped. Manual captions are preferred. Automatic captions are used only when `include_auto_captions` is enabled.
+
+### Movies
+
+The movies collector uses the current [OpenSubtitles.com REST API](https://opensubtitles.stoplight.io/docs/opensubtitles-api/e3750fd63a100-getting-started). Search is restricted to Indonesian subtitles and ordered by download count. Supported raw subtitle formats are SRT, WebVTT, ASS/SSA, and MicroDVD SUB.
+
+When `search_query` is empty, the collector uses the latest-movie discovery endpoint. A non-empty query must contain at least three characters.
+
+The [OpenSubtitles free allowance](https://opensubtitles.tawk.help/article/about-the-api) is currently 5 downloads per 24 hours without an account or 20 downloads per 24 hours with a free account. When account credentials are configured, the collector reads the account's actual remaining quota and stops cleanly when it is exhausted.
+
+OpenSubtitles does not consistently expose a reusable license identifier for every subtitle. When no license is present in the response, catalog records use `"license":"unknown"`.
+
+Movie entries without a downloadable, supported subtitle are skipped because this project does not transcribe audio.
